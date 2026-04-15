@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Memecoin Market Analyzer",
-  description: "Web analisa market crypto memecoin untuk sinyal arah harga jangka pendek.",
+  title: "Crypto Market Analyzer",
+  description: "Web analisa market crypto untuk memecoin dan coin besar dengan sinyal arah harga.",
 };
 
 export default function RootLayout({

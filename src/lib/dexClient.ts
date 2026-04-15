@@ -23,6 +23,7 @@ export interface PairMarketData {
 
 const DEX_BASE_URL =
   process.env.DEX_API_BASE_URL ?? "https://api.dexscreener.com/latest/dex";
+const GECKO_BASE_URL = "https://api.geckoterminal.com/api/v2";
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -31,6 +32,71 @@ function clamp(value: number, min: number, max: number) {
 function pseudoRandom(seed: number) {
   const value = Math.sin(seed) * 10000;
   return value - Math.floor(value);
+}
+
+interface GeckoOhlcvResponse {
+  data?: {
+    attributes?: {
+      ohlcv_list?: [number, number, number, number, number, number][];
+    };
+  };
+}
+
+const CHAIN_TO_GECKO_NETWORK: Record<string, string> = {
+  ethereum: "eth",
+  bsc: "bsc",
+  base: "base",
+  arbitrum: "arbitrum",
+  polygon: "polygon_pos",
+  solana: "solana",
+  sui: "sui-network",
+  avalanche: "avax",
+  optimism: "optimism",
+};
+
+function mapGeckoNetwork(chainId: string) {
+  return CHAIN_TO_GECKO_NETWORK[chainId.toLowerCase()] ?? null;
+}
+
+async function fetchGeckoCandles(pair: DexSearchPair): Promise<Candle[] | null> {
+  const network = mapGeckoNetwork(pair.chainId);
+  if (!network) {
+    return null;
+  }
+
+  const url = `${GECKO_BASE_URL}/networks/${network}/pools/${pair.pairAddress}/ohlcv/minute?aggregate=1&limit=100&currency=usd&token=base`;
+  const response = await fetch(url, {
+    headers: { Accept: "application/json" },
+    next: { revalidate: 0 },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = (await response.json()) as GeckoOhlcvResponse;
+  const rawCandles = data.data?.attributes?.ohlcv_list;
+  if (!rawCandles || rawCandles.length < 2) {
+    return null;
+  }
+
+  // Gecko mengembalikan urutan terbaru -> terlama, jadi dibalik ke oldest -> newest.
+  return [...rawCandles]
+    .reverse()
+    .map(([timestamp, open, high, low, close, volume]) => ({
+      timestamp: timestamp * 1000,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    }))
+    .filter(
+      (candle) =>
+        [candle.open, candle.high, candle.low, candle.close, candle.volume].every((value) =>
+          Number.isFinite(value),
+        ),
+    );
 }
 
 function buildSyntheticCandles(
@@ -112,11 +178,16 @@ export async function fetchPairMarketData(
   const baseSymbol = pair.baseToken?.symbol ?? "UNKNOWN";
   const quoteSymbol = pair.quoteToken?.symbol ?? "USD";
   const pairLabel = `${baseSymbol}/${quoteSymbol} (${pair.chainId}:${pair.dexId})`;
-  const candles = buildSyntheticCandles(latestPrice, horizonMinutes, pair);
+  const realCandles = await fetchGeckoCandles(pair);
+  const candles =
+    realCandles && realCandles.length > 1
+      ? realCandles
+      : buildSyntheticCandles(latestPrice, horizonMinutes, pair);
+  const normalizedLatestPrice = candles[candles.length - 1]?.close ?? latestPrice;
 
   return {
     pairLabel,
-    latestPrice,
+    latestPrice: normalizedLatestPrice,
     candles,
   };
 }
